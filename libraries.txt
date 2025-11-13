@@ -1,0 +1,8 @@
+# Wokwi Library Manager
+# Liste des bibliothèques nécessaires pour le projet S.I.M.S.
+
+# Bibliothèque pour l'écran LCD I2C
+LiquidCrystal I2C
+
+# Bibliothèque pour le capteur DHT22
+DHT sensor library

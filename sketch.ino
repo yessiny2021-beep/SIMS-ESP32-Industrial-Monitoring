@@ -192,8 +192,9 @@ void setup() {
     lcd.print("MQTT Connect...");
     
     // Générer un ID client unique basé sur l'adresse MAC
-    mqttClientId += WiFi.macAddress();
-    mqttClientId.replace(":", "");  // Retirer les deux-points
+    String macAddr = WiFi.macAddress();
+    macAddr.replace(":", "");  // Retirer les deux-points
+    mqttClientId += macAddr;
     
     mqttClient.setServer(mqttServer, mqttPort);
     mqttClient.setCallback(mqttCallback);
@@ -665,40 +666,69 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   // Traitement selon le topic
   if (strcmp(topic, topicControlRelay) == 0) {
     const char* state = doc["state"];
-    if (strcmp(state, "ON") == 0) {
-      digitalWrite(RELAY_PIN, HIGH);
-      manualRelayControl = true;
-      Serial.println("[MQTT] Relais activé manuellement");
-    } else if (strcmp(state, "OFF") == 0) {
-      digitalWrite(RELAY_PIN, LOW);
-      manualRelayControl = false;
-      Serial.println("[MQTT] Relais désactivé");
+    if (state != nullptr) {
+      if (strcmp(state, "ON") == 0) {
+        digitalWrite(RELAY_PIN, HIGH);
+        manualRelayControl = true;
+        Serial.println("[MQTT] Relais activé manuellement");
+      } else if (strcmp(state, "OFF") == 0) {
+        digitalWrite(RELAY_PIN, LOW);
+        manualRelayControl = false;
+        Serial.println("[MQTT] Relais désactivé");
+      }
+    } else {
+      Serial.println("[MQTT] Erreur: état du relais non spécifié");
     }
   }
   else if (strcmp(topic, topicControlAlarm) == 0) {
     const char* state = doc["state"];
-    if (strcmp(state, "ON") == 0) {
-      manualAlarmControl = true;
-      activateAlarm("ALARME MANUELLE");
-      Serial.println("[MQTT] Alarme activée manuellement");
-    } else if (strcmp(state, "OFF") == 0) {
-      manualAlarmControl = false;
-      deactivateAlarm();
-      Serial.println("[MQTT] Alarme désactivée manuellement");
+    if (state != nullptr) {
+      if (strcmp(state, "ON") == 0) {
+        manualAlarmControl = true;
+        activateAlarm("ALARME MANUELLE");
+        Serial.println("[MQTT] Alarme activée manuellement");
+      } else if (strcmp(state, "OFF") == 0) {
+        manualAlarmControl = false;
+        deactivateAlarm();
+        Serial.println("[MQTT] Alarme désactivée manuellement");
+      }
+    } else {
+      Serial.println("[MQTT] Erreur: état de l'alarme non spécifié");
     }
   }
   else if (strcmp(topic, topicControlThresholds) == 0) {
+    // Validation et mise à jour des seuils
     if (doc.containsKey("temp")) {
-      thresholds.tempMax = doc["temp"];
+      float temp = doc["temp"];
+      if (temp > 0 && temp <= 100) {
+        thresholds.tempMax = temp;
+      } else {
+        Serial.println("[MQTT] Erreur: température invalide (0-100°C)");
+      }
     }
     if (doc.containsKey("hum")) {
-      thresholds.humidityMax = doc["hum"];
+      float hum = doc["hum"];
+      if (hum > 0 && hum <= 100) {
+        thresholds.humidityMax = hum;
+      } else {
+        Serial.println("[MQTT] Erreur: humidité invalide (0-100%)");
+      }
     }
     if (doc.containsKey("gas")) {
-      thresholds.gasMax = doc["gas"];
+      int gas = doc["gas"];
+      if (gas >= 0 && gas <= 4095) {
+        thresholds.gasMax = gas;
+      } else {
+        Serial.println("[MQTT] Erreur: gaz invalide (0-4095)");
+      }
     }
     if (doc.containsKey("light")) {
-      thresholds.lightMin = doc["light"];
+      int light = doc["light"];
+      if (light >= 0 && light <= 4095) {
+        thresholds.lightMin = light;
+      } else {
+        Serial.println("[MQTT] Erreur: luminosité invalide (0-4095)");
+      }
     }
     saveThresholdsToEEPROM();
     Serial.println("[MQTT] Seuils mis à jour via MQTT");

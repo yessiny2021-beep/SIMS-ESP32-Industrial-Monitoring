@@ -6,3 +6,9 @@ LiquidCrystal I2C
 
 # Bibliothèque pour le capteur DHT22
 DHT sensor library
+
+# Bibliothèque MQTT pour la communication IoT
+PubSubClient
+
+# Bibliothèque JSON pour le formatage des données
+ArduinoJson

@@ -22,6 +22,9 @@
 #include <EEPROM.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include <PubSubClient.h>
+#include <WebServer.h>
+#include <ArduinoJson.h>
 
 // ============ Configuration des pins ============
 #define DHT_PIN 15          // DHT22 sur GPIO15
@@ -45,6 +48,24 @@ const char* password = "";                   // Pas de mot de passe pour Wokwi-G
 String thingSpeakApiKey = "YOUR_API_KEY";    // Remplacer par votre clé API
 const char* thingSpeakServer = "http://api.thingspeak.com/update";
 
+// ============ Configuration MQTT ============
+const char* mqttServer = "broker.hivemq.com";
+const int mqttPort = 1883;
+const char* mqttClientId = "sims-esp32";
+
+// Topics MQTT
+const char* topicSensorsData = "sims/sensors/data";
+const char* topicStatus = "sims/status";
+const char* topicControlRelay = "sims/control/relay";
+const char* topicControlAlarm = "sims/control/alarm";
+const char* topicControlThresholds = "sims/control/thresholds";
+const char* topicControlRefresh = "sims/control/refresh";
+
+// Clients MQTT et Web
+WiFiClient wifiClient;
+PubSubClient mqttClient(wifiClient);
+WebServer webServer(80);
+
 // ============ Seuils par défaut ============
 struct Thresholds {
   float tempMax;      // Température maximale (°C)
@@ -61,10 +82,13 @@ float humidity = 0;
 int gasLevel = 0;
 int lightLevel = 0;
 bool alarmActive = false;
+bool manualRelayControl = false;
+bool manualAlarmControl = false;
 unsigned long lastReadTime = 0;
 unsigned long lastDisplayUpdate = 0;
 unsigned long lastThingSpeakUpdate = 0;
 unsigned long lastSerialMenu = 0;
+unsigned long lastMqttPublish = 0;
 int displayMode = 0;  // 0: Temp/Hum, 1: Gas/Light, 2: Status
 
 // ============ Adresses EEPROM ============
@@ -87,6 +111,14 @@ void handleSerialCommands();
 void sendToThingSpeak();
 void showMenu();
 void blinkStatusLED();
+void connectMQTT();
+void mqttCallback(char* topic, byte* payload, unsigned int length);
+void publishSensorData();
+void setupWebServer();
+void handleRoot();
+void handleStatus();
+void handleSensors();
+void handleNotFound();
 
 void setup() {
   Serial.begin(115200);
@@ -153,6 +185,32 @@ void setup() {
   }
   delay(2000);
   
+  // Initialisation MQTT
+  if (WiFi.status() == WL_CONNECTED) {
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("MQTT Connect...");
+    mqttClient.setServer(mqttServer, mqttPort);
+    mqttClient.setCallback(mqttCallback);
+    connectMQTT();
+    delay(1000);
+  }
+  
+  // Initialisation du serveur Web
+  if (WiFi.status() == WL_CONNECTED) {
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("Web Server...");
+    setupWebServer();
+    webServer.begin();
+    Serial.println("[OK] Serveur Web démarré");
+    Serial.print("URL: http://");
+    Serial.println(WiFi.localIP());
+    lcd.setCursor(0, 1);
+    lcd.print("Web: OK         ");
+    delay(2000);
+  }
+  
   // Affichage des seuils configurés
   Serial.println("\n--- Seuils configurés ---");
   Serial.printf("Température max: %.1f°C\n", thresholds.tempMax);
@@ -177,6 +235,17 @@ void setup() {
 void loop() {
   unsigned long currentTime = millis();
   
+  // Maintenir la connexion MQTT
+  if (WiFi.status() == WL_CONNECTED) {
+    if (!mqttClient.connected()) {
+      connectMQTT();
+    }
+    mqttClient.loop();
+  }
+  
+  // Gérer les requêtes Web
+  webServer.handleClient();
+  
   // Lecture des capteurs toutes les 2 secondes
   if (currentTime - lastReadTime >= 2000) {
     lastReadTime = currentTime;
@@ -189,6 +258,12 @@ void loop() {
     lastDisplayUpdate = currentTime;
     updateDisplay();
     blinkStatusLED();
+  }
+  
+  // Publication MQTT toutes les 5 secondes
+  if (WiFi.status() == WL_CONNECTED && mqttClient.connected() && currentTime - lastMqttPublish >= 5000) {
+    lastMqttPublish = currentTime;
+    publishSensorData();
   }
   
   // Envoi vers ThingSpeak toutes les 20 secondes
@@ -247,7 +322,9 @@ void checkThresholds() {
   if (temperature > thresholds.tempMax && temperature > 0) {
     alarmNeeded = true;
     alarmReason += "TEMP ELEVEE! ";
-    digitalWrite(RELAY_PIN, HIGH);  // Activation ventilateur
+    if (!manualRelayControl) {
+      digitalWrite(RELAY_PIN, HIGH);  // Activation ventilateur
+    }
   }
   
   // Vérification humidité
@@ -260,7 +337,9 @@ void checkThresholds() {
   if (gasLevel > thresholds.gasMax) {
     alarmNeeded = true;
     alarmReason += "GAZ DETECTE! ";
-    digitalWrite(RELAY_PIN, HIGH);  // Activation extracteur
+    if (!manualRelayControl) {
+      digitalWrite(RELAY_PIN, HIGH);  // Activation extracteur
+    }
   }
   
   // Vérification luminosité
@@ -270,7 +349,9 @@ void checkThresholds() {
   }
   
   // Activation/Désactivation de l'alarme
-  if (alarmNeeded) {
+  if (manualAlarmControl) {
+    // Mode manuel - ne pas changer l'état
+  } else if (alarmNeeded) {
     activateAlarm(alarmReason);
   } else {
     deactivateAlarm();
@@ -298,11 +379,16 @@ void deactivateAlarm() {
     Serial.println("[INFO] Conditions normales rétablies. Alarme désactivée.\n");
   }
   
-  alarmActive = false;
-  noTone(BUZZER_PIN);
-  digitalWrite(BUZZER_PIN, LOW);
-  digitalWrite(LED_ALARM_PIN, LOW);
-  digitalWrite(RELAY_PIN, LOW);
+  if (!manualAlarmControl) {
+    alarmActive = false;
+    noTone(BUZZER_PIN);
+    digitalWrite(BUZZER_PIN, LOW);
+    digitalWrite(LED_ALARM_PIN, LOW);
+  }
+  
+  if (!manualRelayControl) {
+    digitalWrite(RELAY_PIN, LOW);
+  }
 }
 
 void updateDisplay() {
@@ -508,4 +594,271 @@ void showMenu() {
   Serial.println("║  SETGAS 2500     - Niveau gaz max = 2500              ║");
   Serial.println("╚════════════════════════════════════════════════════════╝");
   Serial.println();
+}
+
+// ============ Fonctions MQTT ============
+
+void connectMQTT() {
+  if (mqttClient.connected()) {
+    return;
+  }
+  
+  Serial.print("Connexion au broker MQTT...");
+  
+  if (mqttClient.connect(mqttClientId)) {
+    Serial.println(" Connecté!");
+    
+    // Souscription aux topics de contrôle
+    mqttClient.subscribe(topicControlRelay);
+    mqttClient.subscribe(topicControlAlarm);
+    mqttClient.subscribe(topicControlThresholds);
+    mqttClient.subscribe(topicControlRefresh);
+    
+    Serial.println("[MQTT] Souscription aux topics de contrôle OK");
+    
+    // Publier un message de statut
+    mqttClient.publish(topicStatus, "{\"status\":\"online\"}");
+  } else {
+    Serial.print(" Échec! Code: ");
+    Serial.println(mqttClient.state());
+  }
+}
+
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  // Convertir le payload en String
+  String message = "";
+  for (unsigned int i = 0; i < length; i++) {
+    message += (char)payload[i];
+  }
+  
+  Serial.printf("[MQTT] Message reçu sur %s: %s\n", topic, message.c_str());
+  
+  // Parser JSON
+  StaticJsonDocument<200> doc;
+  DeserializationError error = deserializeJson(doc, message);
+  
+  if (error) {
+    Serial.println("[MQTT] Erreur parsing JSON");
+    return;
+  }
+  
+  // Traitement selon le topic
+  if (strcmp(topic, topicControlRelay) == 0) {
+    const char* state = doc["state"];
+    if (strcmp(state, "ON") == 0) {
+      digitalWrite(RELAY_PIN, HIGH);
+      manualRelayControl = true;
+      Serial.println("[MQTT] Relais activé manuellement");
+    } else if (strcmp(state, "OFF") == 0) {
+      digitalWrite(RELAY_PIN, LOW);
+      manualRelayControl = false;
+      Serial.println("[MQTT] Relais désactivé");
+    }
+  }
+  else if (strcmp(topic, topicControlAlarm) == 0) {
+    const char* state = doc["state"];
+    if (strcmp(state, "ON") == 0) {
+      manualAlarmControl = true;
+      activateAlarm("ALARME MANUELLE");
+      Serial.println("[MQTT] Alarme activée manuellement");
+    } else if (strcmp(state, "OFF") == 0) {
+      manualAlarmControl = false;
+      deactivateAlarm();
+      Serial.println("[MQTT] Alarme désactivée manuellement");
+    }
+  }
+  else if (strcmp(topic, topicControlThresholds) == 0) {
+    if (doc.containsKey("temp")) {
+      thresholds.tempMax = doc["temp"];
+    }
+    if (doc.containsKey("hum")) {
+      thresholds.humidityMax = doc["hum"];
+    }
+    if (doc.containsKey("gas")) {
+      thresholds.gasMax = doc["gas"];
+    }
+    if (doc.containsKey("light")) {
+      thresholds.lightMin = doc["light"];
+    }
+    saveThresholdsToEEPROM();
+    Serial.println("[MQTT] Seuils mis à jour via MQTT");
+  }
+  else if (strcmp(topic, topicControlRefresh) == 0) {
+    publishSensorData();
+    Serial.println("[MQTT] Données rafraîchies");
+  }
+}
+
+void publishSensorData() {
+  if (!mqttClient.connected()) {
+    return;
+  }
+  
+  // Créer JSON avec les données des capteurs
+  StaticJsonDocument<256> doc;
+  doc["temperature"] = temperature;
+  doc["humidity"] = humidity;
+  doc["gas"] = gasLevel;
+  doc["light"] = lightLevel;
+  doc["alarm"] = alarmActive;
+  doc["relay"] = digitalRead(RELAY_PIN);
+  doc["wifi"] = WiFi.status() == WL_CONNECTED;
+  doc["timestamp"] = millis() / 1000;
+  
+  String output;
+  serializeJson(doc, output);
+  
+  mqttClient.publish(topicSensorsData, output.c_str());
+}
+
+// ============ Fonctions Web Server ============
+
+void setupWebServer() {
+  // Route principale - Page HTML
+  webServer.on("/", handleRoot);
+  
+  // Routes API
+  webServer.on("/api/status", handleStatus);
+  webServer.on("/api/sensors", handleSensors);
+  
+  // Route pour les fichiers non trouvés
+  webServer.onNotFound(handleNotFound);
+}
+
+void handleRoot() {
+  // Lire le fichier HTML depuis SPIFFS ou le retourner en tant que String
+  // Pour Wokwi, on va embarquer le HTML directement dans le code
+  String html = R"rawliteral(
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>S.I.M.S. - Dashboard</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #1a2332;
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .info {
+            background: #f0f0f0;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .info h2 {
+            margin-top: 0;
+            color: #2c5f8d;
+        }
+        .btn {
+            display: inline-block;
+            padding: 10px 20px;
+            background: #2c5f8d;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+            margin: 10px 5px;
+        }
+        .btn:hover {
+            background: #1a3d5c;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🏭 S.I.M.S. - Système de Surveillance Industrielle</h1>
+        <div class="info">
+            <h2>Bienvenue sur le serveur Web S.I.M.S.</h2>
+            <p>Le système de surveillance industrielle est actif et connecté.</p>
+            <p><strong>Adresse IP:</strong> )rawliteral" + WiFi.localIP().toString() + R"rawliteral(</p>
+            <p><strong>État WiFi:</strong> Connecté</p>
+            <p><strong>État MQTT:</strong> )rawliteral" + String(mqttClient.connected() ? "Connecté" : "Déconnecté") + R"rawliteral(</p>
+        </div>
+        <div class="info">
+            <h2>📊 Données en Temps Réel</h2>
+            <p><strong>Température:</strong> )rawliteral" + String(temperature, 1) + R"rawliteral( °C</p>
+            <p><strong>Humidité:</strong> )rawliteral" + String(humidity, 1) + R"rawliteral( %</p>
+            <p><strong>Niveau Gaz:</strong> )rawliteral" + String(gasLevel) + R"rawliteral(</p>
+            <p><strong>Luminosité:</strong> )rawliteral" + String(lightLevel) + R"rawliteral(</p>
+            <p><strong>Alarme:</strong> )rawliteral" + String(alarmActive ? "ACTIVE ⚠️" : "Inactive ✓") + R"rawliteral(</p>
+        </div>
+        <div class="info">
+            <h2>🔗 Accès à l'Interface Complète</h2>
+            <p>Pour accéder à l'interface web complète avec graphiques et contrôles MQTT, ouvrez le fichier <strong>data/index.html</strong> dans votre navigateur.</p>
+            <p>Assurez-vous que votre navigateur peut se connecter au broker MQTT public: <strong>broker.hivemq.com:8000</strong></p>
+            <a href="/api/sensors" class="btn">📡 API Capteurs (JSON)</a>
+            <a href="/api/status" class="btn">📊 API Statut (JSON)</a>
+        </div>
+        <div class="info">
+            <h2>📱 Topics MQTT</h2>
+            <ul>
+                <li><code>sims/sensors/data</code> - Données des capteurs (lecture)</li>
+                <li><code>sims/control/relay</code> - Contrôle du relais (écriture)</li>
+                <li><code>sims/control/alarm</code> - Contrôle de l'alarme (écriture)</li>
+                <li><code>sims/control/thresholds</code> - Modification des seuils (écriture)</li>
+                <li><code>sims/status</code> - Statut du système (lecture)</li>
+            </ul>
+        </div>
+    </div>
+</body>
+</html>
+)rawliteral";
+  
+  webServer.send(200, "text/html", html);
+}
+
+void handleStatus() {
+  StaticJsonDocument<256> doc;
+  doc["status"] = "online";
+  doc["wifi"] = WiFi.status() == WL_CONNECTED;
+  doc["mqtt"] = mqttClient.connected();
+  doc["alarm"] = alarmActive;
+  doc["relay"] = digitalRead(RELAY_PIN);
+  doc["uptime"] = millis() / 1000;
+  doc["ip"] = WiFi.localIP().toString();
+  
+  String output;
+  serializeJson(doc, output);
+  
+  webServer.send(200, "application/json", output);
+}
+
+void handleSensors() {
+  StaticJsonDocument<256> doc;
+  doc["temperature"] = temperature;
+  doc["humidity"] = humidity;
+  doc["gas"] = gasLevel;
+  doc["light"] = lightLevel;
+  doc["alarm"] = alarmActive;
+  doc["relay"] = digitalRead(RELAY_PIN);
+  doc["timestamp"] = millis() / 1000;
+  
+  String output;
+  serializeJson(doc, output);
+  
+  webServer.send(200, "application/json", output);
+}
+
+void handleNotFound() {
+  String message = "404 - Page non trouvée\n\n";
+  message += "URI: " + webServer.uri() + "\n";
+  message += "Méthode: " + String((webServer.method() == HTTP_GET) ? "GET" : "POST") + "\n";
+  
+  webServer.send(404, "text/plain", message);
 }

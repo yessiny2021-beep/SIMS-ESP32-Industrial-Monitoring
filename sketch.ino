@@ -51,7 +51,7 @@ const char* thingSpeakServer = "http://api.thingspeak.com/update";
 // ============ Configuration MQTT ============
 const char* mqttServer = "broker.hivemq.com";
 const int mqttPort = 1883;
-const char* mqttClientId = "sims-esp32";
+String mqttClientId = "sims-esp32-";  // Will be completed with MAC address
 
 // Topics MQTT
 const char* topicSensorsData = "sims/sensors/data";
@@ -190,6 +190,11 @@ void setup() {
     lcd.clear();
     lcd.setCursor(0, 0);
     lcd.print("MQTT Connect...");
+    
+    // Générer un ID client unique basé sur l'adresse MAC
+    mqttClientId += WiFi.macAddress();
+    mqttClientId.replace(":", "");  // Retirer les deux-points
+    
     mqttClient.setServer(mqttServer, mqttPort);
     mqttClient.setCallback(mqttCallback);
     connectMQTT();
@@ -605,7 +610,7 @@ void connectMQTT() {
   
   Serial.print("Connexion au broker MQTT...");
   
-  if (mqttClient.connect(mqttClientId)) {
+  if (mqttClient.connect(mqttClientId.c_str())) {
     Serial.println(" Connecté!");
     
     // Souscription aux topics de contrôle
@@ -619,8 +624,23 @@ void connectMQTT() {
     // Publier un message de statut
     mqttClient.publish(topicStatus, "{\"status\":\"online\"}");
   } else {
-    Serial.print(" Échec! Code: ");
-    Serial.println(mqttClient.state());
+    Serial.print(" Échec! Code d'erreur: ");
+    int state = mqttClient.state();
+    Serial.print(state);
+    Serial.print(" - ");
+    // Messages d'erreur descriptifs
+    switch (state) {
+      case -4: Serial.println("Timeout de connexion"); break;
+      case -3: Serial.println("Connexion perdue"); break;
+      case -2: Serial.println("Échec de connexion"); break;
+      case -1: Serial.println("Client déconnecté"); break;
+      case 1: Serial.println("Mauvais protocole"); break;
+      case 2: Serial.println("Client ID rejeté"); break;
+      case 3: Serial.println("Serveur indisponible"); break;
+      case 4: Serial.println("Mauvais identifiants"); break;
+      case 5: Serial.println("Non autorisé"); break;
+      default: Serial.println("Erreur inconnue"); break;
+    }
   }
 }
 
@@ -633,8 +653,8 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   
   Serial.printf("[MQTT] Message reçu sur %s: %s\n", topic, message.c_str());
   
-  // Parser JSON
-  StaticJsonDocument<200> doc;
+  // Parser JSON avec buffer adapté
+  StaticJsonDocument<256> doc;  // Augmenté à 256 bytes pour plus de sécurité
   DeserializationError error = deserializeJson(doc, message);
   
   if (error) {

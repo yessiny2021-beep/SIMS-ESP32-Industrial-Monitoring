@@ -112,16 +112,18 @@ L'ESP32 héberge un serveur web sur le port 80 avec les routes suivantes:
 
 | Route | Méthode | Description | Retour |
 |-------|---------|-------------|--------|
-| `/` | GET | Page d'accueil avec infos système | HTML |
+| `/` | GET | **Interface web complète intégrée** avec graphiques, contrôles MQTT et console | HTML complet |
 | `/api/status` | GET | Statut du système | JSON |
 | `/api/sensors` | GET | Données des capteurs | JSON |
 
 **Exemple d'accès:**
 ```
-http://<IP_ESP32>/
+http://<IP_ESP32>/                  ← Interface complète accessible directement!
 http://<IP_ESP32>/api/sensors
 http://<IP_ESP32>/api/status
 ```
+
+**🎉 Nouveauté:** L'interface web complète est maintenant directement intégrée dans le sketch.ino! Plus besoin d'ouvrir un fichier séparé - accédez simplement à l'IP de votre ESP32 dans Wokwi pour voir le dashboard complet avec tous les graphiques et contrôles.
 
 ### Interface Web Complète
 
@@ -169,17 +171,23 @@ L'interface web (`data/index.html`) offre:
    - Ouvrir le Serial Monitor (icône en bas à droite)
    - Le système s'initialise et affiche le menu
 
-3. **Accéder à l'interface web**
+3. **Accéder à l'interface web complète**
    - Le Serial Monitor affiche l'adresse IP de l'ESP32
    - Ouvrir un navigateur et accéder à `http://<IP_ESP32>/`
-   - Vous verrez la page d'accueil du serveur web
-
-4. **Utiliser l'interface web complète**
-   - Ouvrir le fichier `data/index.html` dans votre navigateur
+   - **L'interface web complète s'affiche directement!** 🎉
+   - Vous verrez le dashboard complet avec graphiques, contrôles et console
    - L'interface se connecte automatiquement au broker MQTT
    - Les données s'affichent en temps réel dès la connexion
 
 ### Utilisation de l'Interface Web
+
+#### Accès Direct dans Wokwi
+**Plus besoin de fichier séparé!** L'interface complète est maintenant intégrée directement dans le sketch.ino. Accédez simplement à l'IP de l'ESP32 pour voir:
+- 4 cartes de capteurs avec animations
+- 2 graphiques temps réel avec historique
+- Boutons de contrôle (relais, alarme)
+- Formulaire de configuration des seuils
+- Console de logs en direct
 
 #### Connexion MQTT
 1. L'interface se connecte automatiquement à `broker.hivemq.com:8000`

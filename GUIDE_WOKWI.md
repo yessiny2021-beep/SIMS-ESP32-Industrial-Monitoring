@@ -52,21 +52,26 @@ Le système S.I.M.S. intègre maintenant:
 
 ### Accéder à l'Interface Web
 
-#### Option 1: Page Web Simple (intégrée)
+#### Interface Complète Intégrée 🎉
+**Nouveauté:** L'interface web complète est maintenant directement intégrée dans le sketch.ino!
+
 1. Après le démarrage, noter l'adresse IP dans le Serial Monitor
 2. Ouvrir un navigateur et aller à `http://<IP_ESP32>/`
-3. Vous verrez une page avec les données en temps réel
+3. **L'interface complète s'affiche directement!**
+   - 4 cartes de capteurs animées
+   - 2 graphiques temps réel
+   - Contrôles relais et alarme
+   - Configuration des seuils
+   - Console de logs
+4. L'interface se connecte automatiquement au broker MQTT
+5. Les données de l'ESP32 s'affichent en temps réel
 
-#### Option 2: Interface Web Complète (data/index.html)
-1. Télécharger le fichier `data/index.html` depuis le dépôt
-2. Ouvrir ce fichier dans un navigateur moderne (Chrome, Firefox, Edge)
-3. L'interface se connecte automatiquement au broker MQTT
-4. Les données de l'ESP32 s'affichent en temps réel
+**Plus besoin d'ouvrir un fichier séparé!** Tout est accessible directement depuis l'ESP32 dans Wokwi.
 
 ### Tester la Communication MQTT
 
 #### Depuis l'Interface Web:
-1. Ouvrir `data/index.html` dans un navigateur
+1. Accéder à `http://<IP_ESP32>/` dans un navigateur
 2. Vérifier le badge de statut "Connecté" (vert)
 3. Observer les cartes de capteurs se mettre à jour toutes les 5 secondes
 4. Les graphiques affichent l'historique des mesures
